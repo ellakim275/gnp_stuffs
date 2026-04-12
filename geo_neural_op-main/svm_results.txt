@@ -1,0 +1,18 @@
+=== Classification Report ===
+              precision    recall  f1-score   support
+
+     bathtub       0.25      0.33      0.29         3
+       chair       1.00      0.33      0.50         3
+        sofa       0.14      0.33      0.20         3
+     monitor       0.00      0.00      0.00         3
+
+    accuracy                           0.25        12
+   macro avg       0.35      0.25      0.25        12
+weighted avg       0.35      0.25      0.25        12
+
+
+Confusion Matrix:
+[[1 0 2 0]
+ [1 1 1 0]
+ [2 0 1 0]
+ [0 0 3 0]]

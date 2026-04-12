@@ -27,6 +27,7 @@ import sys
 import pickle
 import warnings
 from pathlib import Path
+from sklearn.model_selection import GridSearchCV
 
 import numpy as np
 import torch
@@ -51,16 +52,16 @@ from features import extract_features
 # ── Configuration ─────────────────────────────────────────────────────────────
 CLASSES           = ['bathtub', 'chair', 'sofa', 'monitor']
 MODELNET_ROOT     = SCRIPT_DIR.parent / 'ModelNet10'
-N_TRAIN_PER_CLASS = 5
-N_TEST_PER_CLASS  = 3
+N_TRAIN_PER_CLASS = 10
+N_TEST_PER_CLASS  = 5
 N_POINTS_SAMPLE   = 3000
-SMOOTH_ITERATIONS = 50
+SMOOTH_ITERATIONS = 20
 SMOOTH_LAM        = 0.5
 KNN_K             = 12
 INDICATOR_BINS    = 4       # → 3×4 = 12 half-space features per signal
 VOXEL_BINS        = 3       # → 3³  = 27 voxel features per signal
-N_FOURIER         = 32      # → 32  random Fourier features per signal
-# Total: (12 + 27 + 32) × 2 signals = 142 features per shape
+N_FOURIER         = 64      # → 64  random Fourier features per signal
+# Total: (12 + 27 + 64) × 2 signals = 202 features per shape
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -75,7 +76,7 @@ def sample_mesh_to_points(mesh_path, n_points):
     return np.asarray(pcd.points)
 
 
-def laplacian_smooth(points, k=12, iterations=50, lam=0.5):
+def laplacian_smooth(points, k=12, iterations=20, lam=0.5):
     tree = KDTree(points)
     N = len(points)
     distances, indices = tree.query(points, k=k)
@@ -117,7 +118,15 @@ def process_mesh(mesh_path):
                              indicator_bins=INDICATOR_BINS,
                              voxel_bins=VOXEL_BINS,
                              n_fourier=N_FOURIER)
-    return feats['combined'].cpu().numpy()
+    curvature_vec = feats['combined']
+
+    ones = torch.ones(xyz_t.shape[0], device=xyz_t.device)
+    density_feats = extract_features(xyz_t, {'density': ones},
+                                     indicator_bins=INDICATOR_BINS,
+                                     voxel_bins=VOXEL_BINS,
+                                     n_fourier=N_FOURIER)
+    return torch.cat([curvature_vec, density_feats['combined']]).cpu().numpy()
+
 
 
 def build_dataset(split, n_per_class):
@@ -165,9 +174,14 @@ def main():
     X_test_s  = scaler.transform(X_test)
 
     print("\n=== Training SVM (RBF kernel) ===")
-    clf = SVC(kernel='rbf', C=10.0, gamma='scale',
-              decision_function_shape='ovr', random_state=0)
-    clf.fit(X_train_s, y_train)
+    param_grid = {'C': [0.1, 1.0, 10.0, 100.0], 'gamma': [1e-4, 1e-3, 1e-2, 'scale', 'auto']}
+    base_clf = SVC(kernel='rbf', decision_function_shape='ovr', random_state=0)
+    grid = GridSearchCV(base_clf, param_grid, cv=5, scoring='accuracy', n_jobs=-1)
+    grid.fit(X_train_s, y_train)
+    clf = grid.best_estimator_
+    print(f"  Best params : {grid.best_params_}")
+    print(f"  CV accuracy : {grid.best_score_:.3f}")
+
 
     y_pred = clf.predict(X_test_s)
     report = classification_report(y_test, y_pred, target_names=CLASSES)
