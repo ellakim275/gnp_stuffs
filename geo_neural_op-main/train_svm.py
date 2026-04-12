@@ -50,16 +50,16 @@ from gnp.estimator import GeometryEstimator
 from features import extract_features
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-CLASSES           = ['bathtub', 'chair', 'sofa', 'monitor']
+CLASSES           = ['bathtub', 'chair', 'sofa', 'desk']
 MODELNET_ROOT     = SCRIPT_DIR.parent / 'ModelNet10'
 N_TRAIN_PER_CLASS = 10
 N_TEST_PER_CLASS  = 5
-N_POINTS_SAMPLE   = 3000
-SMOOTH_ITERATIONS = 20
+N_POINTS_SAMPLE   = 5000
+SMOOTH_ITERATIONS = 1
 SMOOTH_LAM        = 0.5
 KNN_K             = 12
-INDICATOR_BINS    = 4       # → 3×4 = 12 half-space features per signal
-VOXEL_BINS        = 3       # → 3³  = 27 voxel features per signal
+INDICATOR_BINS    = 2       # → 3×4 = 12 half-space features per signal
+VOXEL_BINS        = 2       # → 3³  = 27 voxel features per signal
 N_FOURIER         = 64      # → 64  random Fourier features per signal
 # Total: (12 + 27 + 64) × 2 signals = 202 features per shape
 
@@ -76,7 +76,7 @@ def sample_mesh_to_points(mesh_path, n_points):
     return np.asarray(pcd.points)
 
 
-def laplacian_smooth(points, k=12, iterations=20, lam=0.5):
+def laplacian_smooth(points, k=12, iterations=1, lam=0.5):
     tree = KDTree(points)
     N = len(points)
     distances, indices = tree.query(points, k=k)
