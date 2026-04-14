@@ -1,13 +1,12 @@
+import sys
 import torch
 import numpy as np
-import os
 from pathlib import Path
 import pyvista as pv
 import pandas as pd
 import open3d as o3d
 
-if Path.cwd().as_posix().endswith('/curvatures_01'):
-    os.chdir('../..')
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from gnp.estimator import GeometryEstimator
 
 if torch.cuda.is_available():
@@ -18,7 +17,7 @@ else:
 pv.set_jupyter_backend("static")
 
 # Load CSV 
-df = pd.read_csv('cat_blobby.csv')
+df = pd.read_csv('../data/cat_blobby.csv')
 pcd = o3d.geometry.PointCloud()
 pcd.points = o3d.utility.Vector3dVector(df[['x', 'y', 'z']].values)
 

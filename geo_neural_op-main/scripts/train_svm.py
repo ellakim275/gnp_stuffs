@@ -15,7 +15,7 @@ Classifier:
   sklearn SVC with RBF kernel, trained on feature vectors from 4 ModelNet10
   classes (bathtub, chair, sofa, monitor), 5 training + 3 test meshes each.
 
-Outputs (written to the same directory as this script):
+Outputs (written to output/ in the repo root):
   svm_features.npz    — raw feature arrays for later inspection
   svm_model.pkl       — trained SVM + StandardScaler + class names
   svm_results.txt     — sklearn classification report + confusion matrix
@@ -43,15 +43,18 @@ matplotlib.use('Agg')          # headless — no display required
 import matplotlib.pyplot as plt
 
 # ── Path setup ────────────────────────────────────────────────────────────────
-SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIR))
+SCRIPT_DIR  = Path(__file__).resolve().parent
+REPO_ROOT   = SCRIPT_DIR.parent
+OUTPUT_DIR  = REPO_ROOT / 'output'
+sys.path.insert(0, str(SCRIPT_DIR))   # for features.py (same dir)
+sys.path.insert(0, str(REPO_ROOT))    # for gnp package
 
 from gnp.estimator import GeometryEstimator
 from features import extract_features
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 CLASSES           = ['bathtub', 'chair', 'sofa', 'desk']
-MODELNET_ROOT     = SCRIPT_DIR.parent / 'ModelNet10'
+MODELNET_ROOT     = REPO_ROOT.parent / 'ModelNet10'
 N_TRAIN_PER_CLASS = 10
 N_TEST_PER_CLASS  = 5
 N_POINTS_SAMPLE   = 5000
@@ -164,7 +167,7 @@ def main():
     X_test, y_test, _ = build_dataset('test', N_TEST_PER_CLASS)
     print(f"\nTrain: {X_train.shape}  Test: {X_test.shape}")
 
-    out_npz = SCRIPT_DIR / 'svm_features.npz'
+    out_npz = OUTPUT_DIR / 'svm_features.npz'
     np.savez(str(out_npz), X_train=X_train, y_train=y_train,
              X_test=X_test, y_test=y_test, classes=np.array(CLASSES))
     print(f"Saved: {out_npz}")
@@ -191,12 +194,12 @@ def main():
     print("Confusion Matrix:")
     print(cm)
 
-    out_txt = SCRIPT_DIR / 'svm_results.txt'
+    out_txt = OUTPUT_DIR / 'svm_results.txt'
     out_txt.write_text("=== Classification Report ===\n" + report +
                        "\n\nConfusion Matrix:\n" + str(cm) + "\n")
     print(f"Saved: {out_txt}")
 
-    out_pkl = SCRIPT_DIR / 'svm_model.pkl'
+    out_pkl = OUTPUT_DIR / 'svm_model.pkl'
     with open(out_pkl, 'wb') as f:
         pickle.dump({'svm': clf, 'scaler': scaler, 'classes': CLASSES}, f)
     print(f"Saved: {out_pkl}")
@@ -220,7 +223,7 @@ def main():
     ax.set_title('GNP Curvature Features — PCA projection\n(circles = train, stars = test)')
     ax.legend(loc='best', fontsize=9)
     plt.tight_layout()
-    out_png = SCRIPT_DIR / 'feature_pca_plot.png'
+    out_png = OUTPUT_DIR / 'feature_pca_plot.png'
     plt.savefig(str(out_png), dpi=150)
     plt.close()
     print(f"Saved: {out_png}")

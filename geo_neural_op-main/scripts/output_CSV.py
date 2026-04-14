@@ -8,7 +8,7 @@ mesh = o3d.io.read_triangle_mesh('/Users/ellakim/Downloads/GNP_tests/ModelNet10/
 '''
 mesh = mesh.filter_smooth_laplacian(number_of_iterations=1)
 mesh.compute_vertex_normals()
-o3d.io.write_triangle_mesh('desk_smoothed_laplace_mesh.ply', mesh)  
+o3d.io.write_triangle_mesh('../data/desk_smoothed_laplace_mesh.ply', mesh)
 '''
 
 pcd = mesh.sample_points_poisson_disk(number_of_points=10000)
@@ -16,4 +16,4 @@ pcd = mesh.sample_points_poisson_disk(number_of_points=10000)
 
 
 points = np.asarray(pcd.points)
-np.savetxt('bathtub_uniform.csv', points, delimiter=',', header='x,y,z', comments='')
+np.savetxt('../data/bathtub_uniform.csv', points, delimiter=',', header='x,y,z', comments='')

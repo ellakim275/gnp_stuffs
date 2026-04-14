@@ -3,7 +3,7 @@ import numpy as np
 from scipy.spatial import KDTree
 import scipy.sparse as sp
 
-points = np.loadtxt('bathtub_uniform.csv', delimiter=',', skiprows=1)
+points = np.loadtxt('../data/bathtub_uniform.csv', delimiter=',', skiprows=1)
 
 k = 12
 tree = KDTree(points)
@@ -34,6 +34,6 @@ def knn_laplacian_smooth(points, L_norm, iterations=100, lam=0.5):
 
 smoothed = knn_laplacian_smooth(points, L_norm, iterations=100, lam=0.5)
 
-np.savetxt('bathtub_uniform_blobby.csv',   smoothed, delimiter=',', header='x,y,z', comments='')
+np.savetxt('../data/bathtub_uniform_blobby.csv', smoothed, delimiter=',', header='x,y,z', comments='')
 
 print(f"Points: {N}, k={k}, sigma={sigma:.4f}")
