@@ -51,7 +51,7 @@ from knn import laplacian_smooth
 from curvature import estimate_curvatures
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-CLASSES           = ['bathtub', 'chair', 'sofa', 'desk']
+CLASSES           = ['bathtub', 'chair', 'toilet', 'desk']
 MODELNET_ROOT     = REPO_ROOT.parent / 'ModelNet10'
 N_TRAIN_PER_CLASS = 30
 N_TEST_PER_CLASS  = 5
