@@ -22,7 +22,6 @@ Outputs (written to output/ in the repo root):
   feature_pca_plot.png — 2D PCA scatter of the feature space
 """
 
-import os
 import sys
 import pickle
 import warnings
@@ -31,9 +30,6 @@ from sklearn.model_selection import GridSearchCV
 
 import numpy as np
 import torch
-import open3d as o3d
-from scipy.spatial import KDTree
-import scipy.sparse as sp
 from sklearn.svm import SVC
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
@@ -49,69 +45,28 @@ OUTPUT_DIR  = REPO_ROOT / 'output'
 sys.path.insert(0, str(SCRIPT_DIR))   # for features.py (same dir)
 sys.path.insert(0, str(REPO_ROOT))    # for gnp package
 
-from gnp.estimator import GeometryEstimator
 from features import extract_features
+from output_CSV import sample_mesh_to_points
+from knn import laplacian_smooth
+from curvature import estimate_curvatures
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 CLASSES           = ['bathtub', 'chair', 'sofa', 'desk']
 MODELNET_ROOT     = REPO_ROOT.parent / 'ModelNet10'
-N_TRAIN_PER_CLASS = 10
+N_TRAIN_PER_CLASS = 30
 N_TEST_PER_CLASS  = 5
 N_POINTS_SAMPLE   = 5000
 SMOOTH_ITERATIONS = 1
 SMOOTH_LAM        = 0.5
 KNN_K             = 12
-INDICATOR_BINS    = 2       # → 3×4 = 12 half-space features per signal
-VOXEL_BINS        = 2       # → 3³  = 27 voxel features per signal
-N_FOURIER         = 64      # → 64  random Fourier features per signal
-# Total: (12 + 27 + 64) × 2 signals = 202 features per shape
+INDICATOR_BINS    = 1       
+VOXEL_BINS        = 1       
+N_FOURIER         = 64     
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 # ── Pipeline helpers ──────────────────────────────────────────────────────────
-
-def sample_mesh_to_points(mesh_path, n_points):
-    mesh = o3d.io.read_triangle_mesh(str(mesh_path))
-    if not mesh.has_triangles():
-        raise ValueError(f"Mesh has no triangles: {mesh_path}")
-    pcd = mesh.sample_points_poisson_disk(number_of_points=n_points)
-    return np.asarray(pcd.points)
-
-
-def laplacian_smooth(points, k=12, iterations=1, lam=0.5):
-    tree = KDTree(points)
-    N = len(points)
-    distances, indices = tree.query(points, k=k)
-    sigma = np.mean(distances[:, 1]).clip(1e-8)
-    rows = np.repeat(np.arange(N), k - 1)
-    cols = indices[:, 1:].flatten()
-    weights = np.exp(-distances[:, 1:].flatten() ** 2 / (2 * sigma ** 2))
-    W = sp.csr_matrix((weights, (rows, cols)), shape=(N, N))
-    W = (W + W.T) / 2
-    degree = np.asarray(W.sum(axis=1)).flatten().clip(1e-8)
-    D_inv = sp.diags(1.0 / degree)
-    L_norm = D_inv @ (sp.diags(degree) - W)
-    p = points.copy()
-    for _ in range(iterations):
-        p = p - lam * (L_norm @ p)
-    return p
-
-
-def estimate_curvatures(points, device):
-    pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(points)
-    pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamKNN(knn=30))
-    pcd.orient_normals_consistent_tangent_plane(100)
-    normals = np.asarray(pcd.normals)
-    xyz = points - points.mean(axis=0)
-    xyz = xyz / max(np.max(np.abs(xyz)), 1e-8)
-    xyz_t = torch.tensor(xyz, dtype=torch.float32, device=device)
-    n_t   = torch.tensor(normals, dtype=torch.float32, device=device)
-    estimator = GeometryEstimator(xyz_t, orientation=n_t, model='clean_30k', device=device)
-    output = estimator.estimate_quantities(['mean_curvature', 'gaussian_curvature'])
-    return xyz_t, output
-
 
 def process_mesh(mesh_path):
     pts = sample_mesh_to_points(mesh_path, N_POINTS_SAMPLE)
@@ -129,7 +84,6 @@ def process_mesh(mesh_path):
                                      voxel_bins=VOXEL_BINS,
                                      n_fourier=N_FOURIER)
     return torch.cat([curvature_vec, density_feats['combined']]).cpu().numpy()
-
 
 
 def build_dataset(split, n_per_class):
