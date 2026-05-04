@@ -8,14 +8,39 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from gnp.estimator import GeometryEstimator
 
 
+def canonicalize_points(points):
+    """
+    Center, PCA-align, fix axis signs deterministically, and normalize to [-1, 1].
+
+    This makes axis-aligned downstream features more comparable across samples
+    of the same class.
+    """
+    xyz = np.asarray(points, dtype=np.float64)
+    xyz = xyz - xyz.mean(axis=0, keepdims=True)
+
+    cov = np.cov(xyz, rowvar=False)
+    eigvals, eigvecs = np.linalg.eigh(cov)
+    order = np.argsort(eigvals)[::-1]
+    basis = eigvecs[:, order]
+    aligned = xyz @ basis
+
+    # Resolve PCA sign ambiguity deterministically: flip each axis so the
+    # positive extent is at least as large as the negative extent.
+    for axis in range(3):
+        if abs(aligned[:, axis].min()) > abs(aligned[:, axis].max()):
+            aligned[:, axis] *= -1.0
+
+    aligned = aligned / max(np.max(np.abs(aligned)), 1e-8)
+    return aligned.astype(np.float32)
+
+
 def estimate_curvatures(points, device):
+    xyz = canonicalize_points(points)
     pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(points)
+    pcd.points = o3d.utility.Vector3dVector(xyz)
     pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamKNN(knn=30))
     pcd.orient_normals_consistent_tangent_plane(100)
     normals = np.asarray(pcd.normals)
-    xyz = points - points.mean(axis=0)
-    xyz = xyz / max(np.max(np.abs(xyz)), 1e-8)
     xyz_t = torch.tensor(xyz, dtype=torch.float32, device=device)
     n_t   = torch.tensor(normals, dtype=torch.float32, device=device)
     estimator = GeometryEstimator(xyz_t, orientation=n_t, model='clean_30k', device=device)

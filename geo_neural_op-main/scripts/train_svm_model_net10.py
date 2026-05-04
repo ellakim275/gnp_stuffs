@@ -46,7 +46,7 @@ sys.path.insert(0, str(SCRIPT_DIR))   # for features.py (same dir)
 sys.path.insert(0, str(REPO_ROOT))    # for gnp package
 
 from features import extract_features
-from output_CSV import sample_mesh_to_points
+from sample_pointcloud import sample_mesh_to_points
 from knn import laplacian_smooth
 from curvature import estimate_curvatures
 
@@ -59,8 +59,8 @@ N_POINTS_SAMPLE   = 5000
 SMOOTH_ITERATIONS = 1
 SMOOTH_LAM        = 0.5
 KNN_K             = 12
-INDICATOR_BINS    = 1       
-VOXEL_BINS        = 1       
+INDICATOR_BINS    = 4      
+VOXEL_BINS        = 3      
 N_FOURIER         = 64     
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -130,14 +130,66 @@ def main():
     X_train_s = scaler.fit_transform(X_train)
     X_test_s  = scaler.transform(X_test)
 
-    print("\n=== Training SVM (RBF kernel) ===")
-    param_grid = {'C': [0.1, 1.0, 10.0, 100.0], 'gamma': [1e-4, 1e-3, 1e-2, 'scale', 'auto']}
-    base_clf = SVC(kernel='rbf', decision_function_shape='ovr', random_state=0)
+    print("\n=== Training SVM kernels ===")
+    param_grid = [
+        {
+            'kernel': ['linear'],
+            'C': [0.1, 1.0, 10.0, 100.0],
+        },
+        {
+            'kernel': ['poly'],
+            'C': [0.1, 1.0, 10.0, 100.0],
+            'degree': [2, 3, 4],
+            'gamma': [1e-4, 1e-3, 1e-2, 'scale', 'auto'],
+            'coef0': [0.0, 1.0],
+        },
+        {
+            'kernel': ['rbf'],
+            'C': [0.1, 1.0, 10.0, 100.0],
+            'gamma': [1e-4, 1e-3, 1e-2, 'scale', 'auto'],
+        },
+        {
+            'kernel': ['sigmoid'],
+            'C': [0.1, 1.0, 10.0, 100.0],
+            'gamma': [1e-4, 1e-3, 1e-2, 'scale', 'auto'],
+            'coef0': [0.0, 1.0],
+        },
+    ]
+    base_clf = SVC(decision_function_shape='ovr', random_state=0)
     grid = GridSearchCV(base_clf, param_grid, cv=5, scoring='accuracy', n_jobs=-1)
     grid.fit(X_train_s, y_train)
     clf = grid.best_estimator_
-    print(f"  Best params : {grid.best_params_}")
-    print(f"  CV accuracy : {grid.best_score_:.3f}")
+
+    kernel_results = {}
+    for params, mean_score, std_score, rank in zip(
+        grid.cv_results_['params'],
+        grid.cv_results_['mean_test_score'],
+        grid.cv_results_['std_test_score'],
+        grid.cv_results_['rank_test_score'],
+    ):
+        kernel = params['kernel']
+        current = kernel_results.get(kernel)
+        if current is None or mean_score > current['mean_score']:
+            kernel_results[kernel] = {
+                'mean_score': mean_score,
+                'std_score': std_score,
+                'rank': rank,
+                'params': params,
+            }
+
+    kernel_summary_lines = []
+    for kernel in ['linear', 'poly', 'rbf', 'sigmoid']:
+        result = kernel_results[kernel]
+        line = (
+            f"  {kernel:7s} | CV accuracy "
+            f"{result['mean_score']:.3f} +/- {result['std_score']:.3f} "
+            f"| rank {result['rank']} | params {result['params']}"
+        )
+        kernel_summary_lines.append(line)
+        print(line)
+
+    print(f"\n  Overall best params : {grid.best_params_}")
+    print(f"  Overall CV accuracy : {grid.best_score_:.3f}")
 
 
     y_pred = clf.predict(X_test_s)
@@ -149,13 +201,22 @@ def main():
     print(cm)
 
     out_txt = OUTPUT_DIR / 'svm_results.txt'
-    out_txt.write_text("=== Classification Report ===\n" + report +
-                       "\n\nConfusion Matrix:\n" + str(cm) + "\n")
+    out_txt.write_text(
+        "=== SVM Kernel CV Comparison ===\n"
+        + "\n".join(kernel_summary_lines)
+        + f"\n\nOverall best params: {grid.best_params_}"
+        + f"\nOverall CV accuracy: {grid.best_score_:.3f}\n\n"
+        + "=== Classification Report ===\n" + report
+        + "\n\nConfusion Matrix:\n" + str(cm) + "\n"
+    )
     print(f"Saved: {out_txt}")
 
     out_pkl = OUTPUT_DIR / 'svm_model.pkl'
     with open(out_pkl, 'wb') as f:
-        pickle.dump({'svm': clf, 'scaler': scaler, 'classes': CLASSES}, f)
+        pickle.dump({'svm': clf, 'scaler': scaler, 'classes': CLASSES,
+                     'best_params': grid.best_params_,
+                     'best_cv_accuracy': grid.best_score_,
+                     'kernel_results': kernel_results}, f)
     print(f"Saved: {out_pkl}")
 
     n_tr = len(X_train)
