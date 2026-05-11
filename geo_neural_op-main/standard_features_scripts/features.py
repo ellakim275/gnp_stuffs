@@ -91,14 +91,21 @@ def indicator_features_3d(xyz: torch.Tensor,
     features : (n_bins^3,) tensor  (zeros for empty voxels)
     """
     device = xyz.device
-    edges = torch.linspace(-1.0, 1.0, n_bins + 1, device=device)
+    mins = xyz.min(dim=0).values
+    maxs = xyz.max(dim=0).values
+    spans = (maxs - mins).clamp(min=1e-6)
+    padding = spans * 1e-6
+    edges = [
+        torch.linspace(mins[axis] - padding[axis], maxs[axis] + padding[axis], n_bins + 1, device=device)
+        for axis in range(3)
+    ]
 
     feats = []
     for i, j, k in product(range(n_bins), repeat=3):
         mask = (
-            (xyz[:, 0] >= edges[i]) & (xyz[:, 0] < edges[i+1]) &
-            (xyz[:, 1] >= edges[j]) & (xyz[:, 1] < edges[j+1]) &
-            (xyz[:, 2] >= edges[k]) & (xyz[:, 2] < edges[k+1])
+            (xyz[:, 0] >= edges[0][i]) & (xyz[:, 0] < edges[0][i+1]) &
+            (xyz[:, 1] >= edges[1][j]) & (xyz[:, 1] < edges[1][j+1]) &
+            (xyz[:, 2] >= edges[2][k]) & (xyz[:, 2] < edges[2][k+1])
         ).float()
         weight_sum = mask.sum()
         F = (mask * signal).sum() / weight_sum if weight_sum > 0 else torch.tensor(0.0, device=device)
@@ -239,11 +246,6 @@ def extract_features(xyz: torch.Tensor,
 
     result['combined'] = torch.cat(all_vecs)
     return result
-
-
-# ---------------------------------------------------------------------------
-# Entry point: drop-in continuation after curvature.py
-# ---------------------------------------------------------------------------
 
 if __name__ == '__main__':
     # --- Paste or import from curvature.py outputs ---

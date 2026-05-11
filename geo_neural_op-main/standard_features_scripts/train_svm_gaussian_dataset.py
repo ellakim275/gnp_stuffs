@@ -39,6 +39,7 @@ from sklearn.svm import SVC
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 OUTPUT_DIR = REPO_ROOT / "output" / "gaussian_augmented_dataset"
+SPLIT_MANIFEST = OUTPUT_DIR / "train_test_split.csv"
 sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(REPO_ROOT))
 
@@ -49,8 +50,8 @@ from features import extract_features
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 VARIANT_RE = re.compile(r"^(?P<class_name>[a-zA-Z0-9_]+)_variant(?P<idx>\d+)\.csv$")
 
-TRAIN_PER_CLASS = 9
-TEST_PER_CLASS = 3
+TRAIN_PER_CLASS = 24
+TEST_PER_CLASS = 6
 INDICATOR_BINS = 4
 VOXEL_BINS = 3
 N_FOURIER = 64
@@ -248,46 +249,55 @@ def main() -> None:
         )
     print(f"Saved: {out_pkl}")
 
+    import plotly.graph_objects as go
+    import plotly.express as px
+
     n_tr = len(X_train)
     X_all_s = np.vstack([X_train_s, X_test_s])
-    pca = PCA(n_components=2, random_state=0)
-    X_2d = pca.fit_transform(X_all_s)
-    cmap = plt.get_cmap("tab10")
-    fig, ax = plt.subplots(figsize=(9, 7))
+    pca = PCA(n_components=3, random_state=0)
+    X_3d = pca.fit_transform(X_all_s)
+
+    colors = px.colors.qualitative.Plotly  # 10-color palette, extend if needed
+
+    fig = go.Figure()
+
     for ci, cls_name in enumerate(classes):
-        col = cmap(ci % 10)
+        col = colors[ci % len(colors)]  # same color for both traces
         tr_mask = y_train == ci
         te_mask = y_test == ci
-        ax.scatter(
-            X_2d[:n_tr][tr_mask, 0],
-            X_2d[:n_tr][tr_mask, 1],
-            c=[col],
-            marker="o",
-            s=70,
-            label=f"{cls_name} train",
-            edgecolors="k",
-            linewidths=0.4,
-        )
-        ax.scatter(
-            X_2d[n_tr:][te_mask, 0],
-            X_2d[n_tr:][te_mask, 1],
-            c=[col],
-            marker="*",
-            s=180,
-            edgecolors="k",
-            linewidths=0.4,
-        )
-    ax.set_xlabel(f"PC1 ({pca.explained_variance_ratio_[0]*100:.1f} %)")
-    ax.set_ylabel(f"PC2 ({pca.explained_variance_ratio_[1]*100:.1f} %)")
-    ax.set_title("Gaussian Augmented Dataset — PCA projection")
-    ax.legend(loc="best", fontsize=8)
-    plt.tight_layout()
-    out_png = OUTPUT_DIR / "svm_gaussian_pca_plot.png"
-    plt.savefig(str(out_png), dpi=150)
-    plt.close()
-    print(f"Saved: {out_png}")
-    print("\nDone.")
 
+        tr = X_3d[:n_tr][tr_mask]
+        te = X_3d[n_tr:][te_mask]
+
+        fig.add_trace(go.Scatter3d(
+            x=tr[:, 0], y=tr[:, 1], z=tr[:, 2],
+            mode="markers",
+            marker=dict(size=5, color=col, symbol="circle", line=dict(width=0.5, color="black")),
+            name=f"{cls_name} train",
+            legendgroup=cls_name,
+        ))
+        fig.add_trace(go.Scatter3d(
+            x=te[:, 0], y=te[:, 1], z=te[:, 2],
+            mode="markers",
+            marker=dict(size=8, color=col, symbol="cross", line=dict(width=0.5, color="black")),
+            name=f"{cls_name} test",
+            legendgroup=cls_name,
+            showlegend=True,
+        ))
+
+    fig.update_layout(
+        title="Gaussian Augmented Dataset — PCA projection",
+        scene=dict(
+            xaxis_title=f"PC1 ({pca.explained_variance_ratio_[0]*100:.1f} %)",
+            yaxis_title=f"PC2 ({pca.explained_variance_ratio_[1]*100:.1f} %)",
+            zaxis_title=f"PC3 ({pca.explained_variance_ratio_[2]*100:.1f} %)",
+        ),
+        legend=dict(groupclick="toggleitem"),
+        width=900, height=700,
+    )
+
+    fig.show()                                     
+    
 
 
 if __name__ == "__main__":

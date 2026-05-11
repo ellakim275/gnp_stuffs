@@ -4,17 +4,18 @@ generate_gaussian_dataset.py
 Create a small class-style dataset from six source meshes by:
   1. sampling each mesh to a point cloud
   2. Gaussian smoothing the sampled cloud
-  3. generating three deformed variants per mesh using a smooth random
+  3. generating deformed variants per mesh using a smooth random
      vector field plus mild random linear transforms
   4. exporting one CSV and one PNG per variant
 
-By default this yields 72 point clouds and 72 PNGs (144 files total)
-for 6 classes x 12 variants.
+By default this yields 180 point clouds and 180 PNGs (360 files total)
+for 6 classes x 30 variants, plus a 24/6 train/test manifest per class.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 from pathlib import Path
 
 import matplotlib
@@ -32,6 +33,7 @@ WORKSPACE_ROOT = REPO_ROOT.parent
 MODELNET_ROOT = WORKSPACE_ROOT / "ModelNet10"
 DATA_ROOT = REPO_ROOT / "data"
 OUTPUT_ROOT = REPO_ROOT / "output" / "gaussian_augmented_dataset"
+SPLIT_MANIFEST = OUTPUT_ROOT / "train_test_split.csv"
 
 
 def build_mesh_list() -> list[tuple[str, Path]]:
@@ -176,6 +178,40 @@ def process_mesh(
         print(f"  wrote {variant_name}", flush=True)
 
 
+def write_split_manifest(
+    mesh_list: list[tuple[str, Path]],
+    variants_per_class: int,
+    train_per_class: int,
+    test_per_class: int,
+    out_path: Path,
+) -> None:
+    needed = train_per_class + test_per_class
+    if needed > variants_per_class:
+        raise ValueError(
+            f"Split requests {needed} variants per class, but only "
+            f"{variants_per_class} are generated."
+        )
+
+    with out_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["split", "class_name", "variant_idx", "csv_path", "png_path"],
+        )
+        writer.writeheader()
+        for class_name, _ in mesh_list:
+            for variant_idx in range(1, needed + 1):
+                variant_name = f"{class_name}_variant{variant_idx:02d}"
+                writer.writerow(
+                    {
+                        "split": "train" if variant_idx <= train_per_class else "test",
+                        "class_name": class_name,
+                        "variant_idx": variant_idx,
+                        "csv_path": str(OUTPUT_ROOT / f"{variant_name}.csv"),
+                        "png_path": str(OUTPUT_ROOT / f"{variant_name}.png"),
+                    }
+                )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Generate Gaussian-smoothed point-cloud variants for six meshes."
@@ -185,7 +221,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gaussian-iterations", type=int, default=6)
     parser.add_argument("--gaussian-sigma-factor", type=float, default=4.0)
     parser.add_argument("--point-size", type=float, default=0.2)
-    parser.add_argument("--variants-per-class", type=int, default=12)
+    parser.add_argument("--variants-per-class", type=int, default=30)
+    parser.add_argument("--train-per-class", type=int, default=24)
+    parser.add_argument("--test-per-class", type=int, default=6)
     return parser.parse_args()
 
 
@@ -208,6 +246,14 @@ def main() -> None:
             variants_per_class=args.variants_per_class,
         )
 
+    write_split_manifest(
+        mesh_list=mesh_list,
+        variants_per_class=args.variants_per_class,
+        train_per_class=args.train_per_class,
+        test_per_class=args.test_per_class,
+        out_path=SPLIT_MANIFEST,
+    )
+    print(f"Saved split manifest: {SPLIT_MANIFEST}", flush=True)
     print("Done.", flush=True)
 
 
