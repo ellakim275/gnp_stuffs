@@ -15,24 +15,21 @@ Classifier:
   sklearn SVC with RBF kernel, trained on feature vectors from 4 ModelNet10
   classes (bathtub, chair, sofa, monitor), 5 training + 3 test meshes each.
 
-Outputs (written to the same directory as this script):
+Outputs (written to output/ in the repo root):
   svm_features.npz    — raw feature arrays for later inspection
   svm_model.pkl       — trained SVM + StandardScaler + class names
   svm_results.txt     — sklearn classification report + confusion matrix
   feature_pca_plot.png — 2D PCA scatter of the feature space
 """
 
-import os
 import sys
 import pickle
 import warnings
 from pathlib import Path
+from sklearn.model_selection import GridSearchCV
 
 import numpy as np
 import torch
-import open3d as o3d
-from scipy.spatial import KDTree
-import scipy.sparse as sp
 from sklearn.svm import SVC
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
@@ -42,72 +39,34 @@ matplotlib.use('Agg')          # headless — no display required
 import matplotlib.pyplot as plt
 
 # ── Path setup ────────────────────────────────────────────────────────────────
-SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIR))
+SCRIPT_DIR  = Path(__file__).resolve().parent
+REPO_ROOT   = SCRIPT_DIR.parent
+OUTPUT_DIR  = REPO_ROOT / 'output'
+sys.path.insert(0, str(SCRIPT_DIR))   # for features.py (same dir)
+sys.path.insert(0, str(REPO_ROOT))    # for gnp package
 
-from gnp.estimator import GeometryEstimator
 from features import extract_features
+from point_sampling.sample_pointcloud import sample_mesh_to_points
+from point_sampling.knn import laplacian_smooth
+from point_sampling.curvature import estimate_curvatures
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-CLASSES           = ['bathtub', 'chair', 'sofa', 'monitor']
-MODELNET_ROOT     = SCRIPT_DIR.parent / 'ModelNet10'
-N_TRAIN_PER_CLASS = 5
-N_TEST_PER_CLASS  = 3
-N_POINTS_SAMPLE   = 3000
-SMOOTH_ITERATIONS = 50
+CLASSES           = ['bathtub', 'chair', 'toilet', 'desk']
+MODELNET_ROOT     = REPO_ROOT.parent / 'ModelNet10'
+N_TRAIN_PER_CLASS = 30
+N_TEST_PER_CLASS  = 5
+N_POINTS_SAMPLE   = 5000
+SMOOTH_ITERATIONS = 1
 SMOOTH_LAM        = 0.5
 KNN_K             = 12
-INDICATOR_BINS    = 4       # → 3×4 = 12 half-space features per signal
-VOXEL_BINS        = 3       # → 3³  = 27 voxel features per signal
-N_FOURIER         = 32      # → 32  random Fourier features per signal
-# Total: (12 + 27 + 32) × 2 signals = 142 features per shape
+INDICATOR_BINS    = 4      
+VOXEL_BINS        = 3      
+N_FOURIER         = 64     
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 # ── Pipeline helpers ──────────────────────────────────────────────────────────
-
-def sample_mesh_to_points(mesh_path, n_points):
-    mesh = o3d.io.read_triangle_mesh(str(mesh_path))
-    if not mesh.has_triangles():
-        raise ValueError(f"Mesh has no triangles: {mesh_path}")
-    pcd = mesh.sample_points_poisson_disk(number_of_points=n_points)
-    return np.asarray(pcd.points)
-
-
-def laplacian_smooth(points, k=12, iterations=50, lam=0.5):
-    tree = KDTree(points)
-    N = len(points)
-    distances, indices = tree.query(points, k=k)
-    sigma = np.mean(distances[:, 1]).clip(1e-8)
-    rows = np.repeat(np.arange(N), k - 1)
-    cols = indices[:, 1:].flatten()
-    weights = np.exp(-distances[:, 1:].flatten() ** 2 / (2 * sigma ** 2))
-    W = sp.csr_matrix((weights, (rows, cols)), shape=(N, N))
-    W = (W + W.T) / 2
-    degree = np.asarray(W.sum(axis=1)).flatten().clip(1e-8)
-    D_inv = sp.diags(1.0 / degree)
-    L_norm = D_inv @ (sp.diags(degree) - W)
-    p = points.copy()
-    for _ in range(iterations):
-        p = p - lam * (L_norm @ p)
-    return p
-
-
-def estimate_curvatures(points, device):
-    pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(points)
-    pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamKNN(knn=30))
-    pcd.orient_normals_consistent_tangent_plane(100)
-    normals = np.asarray(pcd.normals)
-    xyz = points - points.mean(axis=0)
-    xyz = xyz / max(np.max(np.abs(xyz)), 1e-8)
-    xyz_t = torch.tensor(xyz, dtype=torch.float32, device=device)
-    n_t   = torch.tensor(normals, dtype=torch.float32, device=device)
-    estimator = GeometryEstimator(xyz_t, orientation=n_t, model='clean_30k', device=device)
-    output = estimator.estimate_quantities(['mean_curvature', 'gaussian_curvature'])
-    return xyz_t, output
-
 
 def process_mesh(mesh_path):
     pts = sample_mesh_to_points(mesh_path, N_POINTS_SAMPLE)
@@ -117,7 +76,14 @@ def process_mesh(mesh_path):
                              indicator_bins=INDICATOR_BINS,
                              voxel_bins=VOXEL_BINS,
                              n_fourier=N_FOURIER)
-    return feats['combined'].cpu().numpy()
+    curvature_vec = feats['combined']
+
+    ones = torch.ones(xyz_t.shape[0], device=xyz_t.device)
+    density_feats = extract_features(xyz_t, {'density': ones},
+                                     indicator_bins=INDICATOR_BINS,
+                                     voxel_bins=VOXEL_BINS,
+                                     n_fourier=N_FOURIER)
+    return torch.cat([curvature_vec, density_feats['combined']]).cpu().numpy()
 
 
 def build_dataset(split, n_per_class):
@@ -155,7 +121,7 @@ def main():
     X_test, y_test, _ = build_dataset('test', N_TEST_PER_CLASS)
     print(f"\nTrain: {X_train.shape}  Test: {X_test.shape}")
 
-    out_npz = SCRIPT_DIR / 'svm_features.npz'
+    out_npz = OUTPUT_DIR / 'svm_features.npz'
     np.savez(str(out_npz), X_train=X_train, y_train=y_train,
              X_test=X_test, y_test=y_test, classes=np.array(CLASSES))
     print(f"Saved: {out_npz}")
@@ -164,10 +130,67 @@ def main():
     X_train_s = scaler.fit_transform(X_train)
     X_test_s  = scaler.transform(X_test)
 
-    print("\n=== Training SVM (RBF kernel) ===")
-    clf = SVC(kernel='rbf', C=10.0, gamma='scale',
-              decision_function_shape='ovr', random_state=0)
-    clf.fit(X_train_s, y_train)
+    print("\n=== Training SVM kernels ===")
+    param_grid = [
+        {
+            'kernel': ['linear'],
+            'C': [0.1, 1.0, 10.0, 100.0],
+        },
+        {
+            'kernel': ['poly'],
+            'C': [0.1, 1.0, 10.0, 100.0],
+            'degree': [2, 3, 4],
+            'gamma': [1e-4, 1e-3, 1e-2, 'scale', 'auto'],
+            'coef0': [0.0, 1.0],
+        },
+        {
+            'kernel': ['rbf'],
+            'C': [0.1, 1.0, 10.0, 100.0],
+            'gamma': [1e-4, 1e-3, 1e-2, 'scale', 'auto'],
+        },
+        {
+            'kernel': ['sigmoid'],
+            'C': [0.1, 1.0, 10.0, 100.0],
+            'gamma': [1e-4, 1e-3, 1e-2, 'scale', 'auto'],
+            'coef0': [0.0, 1.0],
+        },
+    ]
+    base_clf = SVC(decision_function_shape='ovr', random_state=0)
+    grid = GridSearchCV(base_clf, param_grid, cv=5, scoring='accuracy', n_jobs=-1)
+    grid.fit(X_train_s, y_train)
+    clf = grid.best_estimator_
+
+    kernel_results = {}
+    for params, mean_score, std_score, rank in zip(
+        grid.cv_results_['params'],
+        grid.cv_results_['mean_test_score'],
+        grid.cv_results_['std_test_score'],
+        grid.cv_results_['rank_test_score'],
+    ):
+        kernel = params['kernel']
+        current = kernel_results.get(kernel)
+        if current is None or mean_score > current['mean_score']:
+            kernel_results[kernel] = {
+                'mean_score': mean_score,
+                'std_score': std_score,
+                'rank': rank,
+                'params': params,
+            }
+
+    kernel_summary_lines = []
+    for kernel in ['linear', 'poly', 'rbf', 'sigmoid']:
+        result = kernel_results[kernel]
+        line = (
+            f"  {kernel:7s} | CV accuracy "
+            f"{result['mean_score']:.3f} +/- {result['std_score']:.3f} "
+            f"| rank {result['rank']} | params {result['params']}"
+        )
+        kernel_summary_lines.append(line)
+        print(line)
+
+    print(f"\n  Overall best params : {grid.best_params_}")
+    print(f"  Overall CV accuracy : {grid.best_score_:.3f}")
+
 
     y_pred = clf.predict(X_test_s)
     report = classification_report(y_test, y_pred, target_names=CLASSES)
@@ -177,14 +200,23 @@ def main():
     print("Confusion Matrix:")
     print(cm)
 
-    out_txt = SCRIPT_DIR / 'svm_results.txt'
-    out_txt.write_text("=== Classification Report ===\n" + report +
-                       "\n\nConfusion Matrix:\n" + str(cm) + "\n")
+    out_txt = OUTPUT_DIR / 'svm_results.txt'
+    out_txt.write_text(
+        "=== SVM Kernel CV Comparison ===\n"
+        + "\n".join(kernel_summary_lines)
+        + f"\n\nOverall best params: {grid.best_params_}"
+        + f"\nOverall CV accuracy: {grid.best_score_:.3f}\n\n"
+        + "=== Classification Report ===\n" + report
+        + "\n\nConfusion Matrix:\n" + str(cm) + "\n"
+    )
     print(f"Saved: {out_txt}")
 
-    out_pkl = SCRIPT_DIR / 'svm_model.pkl'
+    out_pkl = OUTPUT_DIR / 'svm_model.pkl'
     with open(out_pkl, 'wb') as f:
-        pickle.dump({'svm': clf, 'scaler': scaler, 'classes': CLASSES}, f)
+        pickle.dump({'svm': clf, 'scaler': scaler, 'classes': CLASSES,
+                     'best_params': grid.best_params_,
+                     'best_cv_accuracy': grid.best_score_,
+                     'kernel_results': kernel_results}, f)
     print(f"Saved: {out_pkl}")
 
     n_tr = len(X_train)
@@ -206,7 +238,7 @@ def main():
     ax.set_title('GNP Curvature Features — PCA projection\n(circles = train, stars = test)')
     ax.legend(loc='best', fontsize=9)
     plt.tight_layout()
-    out_png = SCRIPT_DIR / 'feature_pca_plot.png'
+    out_png = OUTPUT_DIR / 'feature_pca_plot.png'
     plt.savefig(str(out_png), dpi=150)
     plt.close()
     print(f"Saved: {out_png}")
