@@ -8,34 +8,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from gnp.estimator import GeometryEstimator
 
 
-def canonicalize_points(points):
-    """
-    Center, PCA-align, fix axis signs deterministically, and normalize to [-1, 1].
-
-    This makes axis-aligned downstream features more comparable across samples
-    of the same class.
-    """
-    xyz = np.asarray(points, dtype=np.float64)
-    xyz = xyz - xyz.mean(axis=0, keepdims=True)
-
-    cov = np.cov(xyz, rowvar=False)
-    eigvals, eigvecs = np.linalg.eigh(cov)
-    order = np.argsort(eigvals)[::-1]
-    basis = eigvecs[:, order]
-    aligned = xyz @ basis
-
-    # Resolve PCA sign ambiguity deterministically: flip each axis so the
-    # positive extent is at least as large as the negative extent.
-    for axis in range(3):
-        if abs(aligned[:, axis].min()) > abs(aligned[:, axis].max()):
-            aligned[:, axis] *= -1.0
-
-    aligned = aligned / max(np.max(np.abs(aligned)), 1e-8)
-    return aligned.astype(np.float32)
-
 
 def estimate_curvatures(points, device):
-    xyz = canonicalize_points(points)
+    xyz = points
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(xyz)
     pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamKNN(knn=30))

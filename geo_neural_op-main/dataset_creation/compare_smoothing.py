@@ -23,8 +23,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from knn import gaussian_smooth, laplacian_smooth
-from sample_pointcloud import sample_mesh_to_points
+from point_sampling.knn import gaussian_smooth, laplacian_smooth
+from point_sampling.sample_pointcloud import sample_mesh_to_points
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent

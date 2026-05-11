@@ -43,7 +43,7 @@ SPLIT_MANIFEST = OUTPUT_DIR / "train_test_split.csv"
 sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(REPO_ROOT))
 
-from curvature import estimate_curvatures
+from point_sampling.curvature import estimate_curvatures
 from features import extract_features
 
 

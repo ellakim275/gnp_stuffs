@@ -46,9 +46,9 @@ sys.path.insert(0, str(SCRIPT_DIR))   # for features.py (same dir)
 sys.path.insert(0, str(REPO_ROOT))    # for gnp package
 
 from features import extract_features
-from sample_pointcloud import sample_mesh_to_points
-from knn import laplacian_smooth
-from curvature import estimate_curvatures
+from point_sampling.sample_pointcloud import sample_mesh_to_points
+from point_sampling.knn import laplacian_smooth
+from point_sampling.curvature import estimate_curvatures
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 CLASSES           = ['bathtub', 'chair', 'toilet', 'desk']

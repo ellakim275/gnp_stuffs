@@ -45,7 +45,7 @@ OUTPUT_DIR = DATASET_DIR / "feature_signatures"
 sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(REPO_ROOT))
 
-from curvature import estimate_curvatures
+from point_sampling.curvature import estimate_curvatures
 from features import extract_features, fourier_features, indicator_features, indicator_features_3d
 
 
