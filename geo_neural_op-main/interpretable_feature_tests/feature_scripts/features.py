@@ -247,6 +247,76 @@ def extract_features(xyz: torch.Tensor,
     result['combined'] = torch.cat(all_vecs)
     return result
 
+
+def fundamental_form_coefficients(metric: torch.Tensor,
+                                  shape: torch.Tensor) -> dict[str, torch.Tensor]:
+    """
+    Extract first and second fundamental form coefficient signals.
+
+    Parameters
+    ----------
+    metric : (N, 2, 2) tensor
+        First fundamental form from GNP SurfacePatch.metric.
+    shape : (N, 2, 2) tensor
+        Second fundamental form from GNP SurfacePatch.shape.
+
+    Returns
+    -------
+    dict
+        Seven per-point scalar signals: E, F, G, e, f1, f2, g.
+    """
+    return {
+        "E": metric[:, 0, 0],
+        "F": metric[:, 0, 1],
+        "G": metric[:, 1, 1],
+        "e": shape[:, 0, 0],
+        "f1": shape[:, 0, 1],
+        "f2": shape[:, 1, 0],
+        "g": shape[:, 1, 1],
+    }
+
+
+def extract_fundamental_form_features(xyz: torch.Tensor,
+                                      metric: torch.Tensor,
+                                      shape: torch.Tensor,
+                                      indicator_bins: int = 4,
+                                      voxel_bins: int = 4,
+                                      n_fourier: int = 128,
+                                      max_freq: float = 4.0,
+                                      seed: int = 42) -> dict:
+    """
+    Build fixed-length shape features from the seven fundamental-form signals.
+
+    The seven raw signals are E, F, G from the first fundamental form and
+    e, f1, f2, g from the second fundamental form. Each signal is passed through
+    the same indicator, voxel, and random Fourier feature pipeline used by the
+    curvature features, then concatenated into one SVM-ready vector.
+    """
+    signals = fundamental_form_coefficients(metric, shape)
+    return extract_features(
+        xyz=xyz,
+        curvatures=signals,
+        indicator_bins=indicator_bins,
+        voxel_bins=voxel_bins,
+        n_fourier=n_fourier,
+        max_freq=max_freq,
+        seed=seed,
+    )
+
+
+def raw_fundamental_form_feature_vector(metric: torch.Tensor,
+                                        shape: torch.Tensor) -> torch.Tensor:
+    """
+    Return the literal seven fundamental-form features for a whole shape.
+
+    Since E, F, G, e, f1, f2, g are per-point coefficient fields, this produces
+    one fixed-length descriptor by averaging each coefficient over the point
+    cloud. The output order is:
+        E, F, G, e, f1, f2, g
+    """
+    signals = fundamental_form_coefficients(metric, shape)
+    return torch.stack([signals[name].float().mean() for name in ["E", "F", "G", "e", "f1", "f2", "g"]])
+
 if __name__ == '__main__':
     # --- Paste or import from curvature.py outputs ---
     # Assumes the following variables are already in scope from curvature.py:

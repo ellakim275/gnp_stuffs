@@ -16,6 +16,7 @@ Per mesh, the script writes:
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -23,16 +24,23 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from point_sampling.knn import gaussian_smooth, laplacian_smooth
-from point_sampling.sample_pointcloud import sample_mesh_to_points
-
-
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parent
-WORKSPACE_ROOT = REPO_ROOT.parent
-MODELNET_ROOT = WORKSPACE_ROOT / "ModelNet10"
-DATA_ROOT = REPO_ROOT / "data"
-OUTPUT_ROOT = REPO_ROOT / "output" / "smoothing_comparison"
+sys.path.insert(0, str(SCRIPT_DIR.parent))
+
+from path_config import roots_for
+
+ROOTS = roots_for(__file__)
+REPO_ROOT = ROOTS["REPO_ROOT"]
+TEST_ROOT = ROOTS["TEST_ROOT"]
+WORKSPACE_ROOT = ROOTS["WORKSPACE_ROOT"]
+MODELNET_ROOT = ROOTS["MODELNET_ROOT"]
+DATA_ROOT = ROOTS["DATA_ROOT"]
+OUTPUT_ROOT = ROOTS["OUTPUT_ROOT"] / "gaussian" / "smoothing_comparison"
+
+sys.path.insert(0, str(SCRIPT_DIR))
+
+from knn import gaussian_smooth, laplacian_smooth
+from sample_pointcloud import sample_mesh_to_points
 
 
 def build_mesh_list() -> list[tuple[str, Path]]:

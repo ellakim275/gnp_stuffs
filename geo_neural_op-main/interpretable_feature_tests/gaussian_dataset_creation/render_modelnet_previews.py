@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import ast
 import csv
+import sys
 from pathlib import Path
 
 import vtk
@@ -45,14 +46,20 @@ except ImportError as exc:
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parent
+sys.path.insert(0, str(SCRIPT_DIR.parent))
+
+from path_config import roots_for
+
+ROOTS = roots_for(__file__)
+REPO_ROOT = ROOTS["REPO_ROOT"]
+TEST_ROOT = ROOTS["TEST_ROOT"]
 
 DEFAULT_CLASSES = ["bathtub", "chair", "toilet", "desk"]
-MODELNET_ROOT = REPO_ROOT.parent / "ModelNet10"
+MODELNET_ROOT = ROOTS["MODELNET_ROOT"]
 DEFAULT_N_TRAIN_PER_CLASS = 30
 DEFAULT_N_TEST_PER_CLASS = 5
 
-DEFAULT_OUTPUT_DIR = REPO_ROOT / "output" / "modelnet_mesh_previews"
+DEFAULT_OUTPUT_DIR = ROOTS["OUTPUT_ROOT"] / "modelnet_mesh_previews"
 IMAGE_SIZE = 360
 
 CLASS_COLORS = {

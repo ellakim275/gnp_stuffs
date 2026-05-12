@@ -4,7 +4,14 @@ import numpy as np
 from pathlib import Path
 import open3d as o3d
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR.parent))
+
+from path_config import roots_for
+
+ROOTS = roots_for(__file__)
+sys.path.insert(0, str(ROOTS["REPO_ROOT"]))
+
 from gnp.estimator import GeometryEstimator
 
 

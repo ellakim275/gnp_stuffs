@@ -14,10 +14,10 @@ separate classes, lightly smoothed for readability, and summarized as class
 prototype barcode heatmaps.
 
 By default this script processes all variant CSVs in:
-    output/gaussian_augmented_dataset/
+    output/gaussian/datasets/first_mixed_gaussian_dataset/gaussian_augmented_dataset/
 
 Outputs:
-    output/gaussian_augmented_dataset/feature_signatures/
+    output/gaussian/datasets/first_mixed_gaussian_dataset/gaussian_augmented_dataset/feature_signatures/
         class_prototypes__<signal>.png
         class_examples__<signal>.png
         feature_order__<signal>.csv
@@ -39,13 +39,21 @@ import torch
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parent
-DATASET_DIR = REPO_ROOT / "output" / "gaussian_augmented_dataset"
+sys.path.insert(0, str(SCRIPT_DIR.parents[1]))
+
+from path_config import roots_for
+
+ROOTS = roots_for(__file__)
+REPO_ROOT = ROOTS["REPO_ROOT"]
+TEST_ROOT = ROOTS["TEST_ROOT"]
+DATASET_DIR = ROOTS["OUTPUT_ROOT"] / "gaussian" / "datasets" / "first_mixed_gaussian_dataset" / "gaussian_augmented_dataset"
 OUTPUT_DIR = DATASET_DIR / "feature_signatures"
 sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(ROOTS["FEATURE_SCRIPTS_ROOT"]))
+sys.path.insert(0, str(ROOTS["GAUSSIAN_SCRIPTS_ROOT"]))
 
-from point_sampling.curvature import estimate_curvatures
+from curvature import estimate_curvatures
 from features import extract_features, fourier_features, indicator_features, indicator_features_3d
 
 
