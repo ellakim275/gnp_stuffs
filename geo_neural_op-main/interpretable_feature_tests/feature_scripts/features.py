@@ -263,59 +263,94 @@ def fundamental_form_coefficients(metric: torch.Tensor,
     Returns
     -------
     dict
-        Seven per-point scalar signals: E, F, G, e, f1, f2, g.
+        First-form signals E, F, G and second-form signals L, M, N.
     """
     return {
         "E": metric[:, 0, 0],
         "F": metric[:, 0, 1],
         "G": metric[:, 1, 1],
-        "e": shape[:, 0, 0],
-        "f1": shape[:, 0, 1],
-        "f2": shape[:, 1, 0],
-        "g": shape[:, 1, 1],
+        "L": shape[:, 0, 0],
+        "M": 0.5 * (shape[:, 0, 1] + shape[:, 1, 0]),
+        "N": shape[:, 1, 1],
     }
 
 
-def extract_fundamental_form_features(xyz: torch.Tensor,
-                                      metric: torch.Tensor,
-                                      shape: torch.Tensor,
-                                      indicator_bins: int = 4,
-                                      voxel_bins: int = 4,
-                                      n_fourier: int = 128,
-                                      max_freq: float = 4.0,
-                                      seed: int = 42) -> dict:
+def fundamental_form_feature_vector(metric: torch.Tensor,
+                                    shape: torch.Tensor) -> torch.Tensor:
     """
-    Build fixed-length shape features from the seven fundamental-form signals.
+    Return invariant curvature distribution features for a whole shape.
 
-    The seven raw signals are E, F, G from the first fundamental form and
-    e, f1, f2, g from the second fundamental form. Each signal is passed through
-    the same indicator, voxel, and random Fourier feature pipeline used by the
-    curvature features, then concatenated into one SVM-ready vector.
-    """
-    signals = fundamental_form_coefficients(metric, shape)
-    return extract_features(
-        xyz=xyz,
-        curvatures=signals,
-        indicator_bins=indicator_bins,
-        voxel_bins=voxel_bins,
-        n_fourier=n_fourier,
-        max_freq=max_freq,
-        seed=seed,
-    )
+    Instead of averaging the frame-dependent fundamental-form coefficients,
+    this derives intrinsic curvature signals from the first and second forms:
+        K  = det(II) / det(I)
+        H  = 0.5 * trace(I^-1 II)
+        k1 = H + sqrt(H^2 - K)
+        k2 = H - sqrt(H^2 - K)
 
+    Each signal is summarized by five distribution statistics:
+        mean, std, skewness, excess kurtosis, IQR.
 
-def raw_fundamental_form_feature_vector(metric: torch.Tensor,
-                                        shape: torch.Tensor) -> torch.Tensor:
-    """
-    Return the literal seven fundamental-form features for a whole shape.
+    The final feature is the discrete total Gaussian curvature, sum(K).
 
-    Since E, F, G, e, f1, f2, g are per-point coefficient fields, this produces
-    one fixed-length descriptor by averaging each coefficient over the point
-    cloud. The output order is:
-        E, F, G, e, f1, f2, g
+    The output order is:
+        K_mean, K_std, K_skewness, K_kurtosis, K_iqr,
+        H_mean, H_std, H_skewness, H_kurtosis, H_iqr,
+        k1_mean, k1_std, k1_skewness, k1_kurtosis, k1_iqr,
+        k2_mean, k2_std, k2_skewness, k2_kurtosis, k2_iqr,
+        total_gaussian_curvature
     """
     signals = fundamental_form_coefficients(metric, shape)
-    return torch.stack([signals[name].float().mean() for name in ["E", "F", "G", "e", "f1", "f2", "g"]])
+    first_form_det = signals["E"] * signals["G"] - signals["F"] * signals["F"]
+    second_form_det = signals["L"] * signals["N"] - signals["M"] * signals["M"]
+    det_sign = torch.where(first_form_det < 0, -1.0, 1.0)
+    safe_det = det_sign * first_form_det.abs().clamp(min=1e-6)
+
+    gaussian_curvature = second_form_det / safe_det
+    mean_curvature = 0.5 * (
+        signals["G"] * signals["L"]
+        - 2.0 * signals["F"] * signals["M"]
+        + signals["E"] * signals["N"]
+    ) / safe_det
+    discriminant = (mean_curvature * mean_curvature - gaussian_curvature).clamp(min=0.0)
+    root = torch.sqrt(discriminant)
+    principal_1 = mean_curvature + root
+    principal_2 = mean_curvature - root
+
+    curvature_signals = [gaussian_curvature, mean_curvature, principal_1, principal_2]
+    feature_parts = [_distribution_stats(signal.float()) for signal in curvature_signals]
+    total_gaussian_curvature = _winsorized_values(gaussian_curvature.float()).sum().view(1)
+    return torch.cat(feature_parts + [total_gaussian_curvature])
+
+
+def _distribution_stats(signal: torch.Tensor) -> torch.Tensor:
+    """
+    Summarize a per-point scalar field with five stable distribution statistics.
+    """
+    values = _winsorized_values(signal)
+    if values.numel() == 0:
+        return signal.new_zeros(5)
+
+    mean = values.mean()
+    centered = values - mean
+    std = torch.sqrt((centered * centered).mean()).clamp(min=1e-8)
+    skewness = (centered.pow(3).mean()) / std.pow(3)
+    kurtosis = (centered.pow(4).mean()) / std.pow(4) - 3.0
+    q25, q75 = torch.quantile(values, torch.tensor([0.25, 0.75], device=values.device))
+    stats = torch.stack([mean, std, skewness, kurtosis, q75 - q25])
+    return torch.nan_to_num(stats, nan=0.0, posinf=1e6, neginf=-1e6).clamp(-1e6, 1e6)
+
+
+def _winsorized_values(signal: torch.Tensor) -> torch.Tensor:
+    """
+    Drop non-finite values and cap singular-estimate tails before aggregation.
+    """
+    values = signal[torch.isfinite(signal)]
+    if values.numel() == 0:
+        return values
+    if values.numel() < 4:
+        return torch.nan_to_num(values, nan=0.0, posinf=1e6, neginf=-1e6).clamp(-1e6, 1e6)
+    q01, q99 = torch.quantile(values, torch.tensor([0.01, 0.99], device=values.device))
+    return values.clamp(q01, q99).clamp(-1e6, 1e6)
 
 if __name__ == '__main__':
     # --- Paste or import from curvature.py outputs ---

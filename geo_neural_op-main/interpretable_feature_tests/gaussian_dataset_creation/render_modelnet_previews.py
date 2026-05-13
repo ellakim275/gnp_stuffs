@@ -54,10 +54,10 @@ ROOTS = roots_for(__file__)
 REPO_ROOT = ROOTS["REPO_ROOT"]
 TEST_ROOT = ROOTS["TEST_ROOT"]
 
-DEFAULT_CLASSES = ["bathtub", "chair", "toilet", "desk"]
+DEFAULT_CLASSES = ["bathtub", "sofa", "toilet", "desk"]
 MODELNET_ROOT = ROOTS["MODELNET_ROOT"]
 DEFAULT_N_TRAIN_PER_CLASS = 30
-DEFAULT_N_TEST_PER_CLASS = 5
+DEFAULT_N_TEST_PER_CLASS = 10
 
 DEFAULT_OUTPUT_DIR = ROOTS["OUTPUT_ROOT"] / "modelnet_mesh_previews"
 IMAGE_SIZE = 360
@@ -76,7 +76,14 @@ def load_train_svm_selection_config() -> tuple[list[str], int, int]:
         "N_TRAIN_PER_CLASS": DEFAULT_N_TRAIN_PER_CLASS,
         "N_TEST_PER_CLASS": DEFAULT_N_TEST_PER_CLASS,
     }
-    train_svm_path = SCRIPT_DIR / "train_svm.py"
+    train_svm_path = TEST_ROOT / "feature_scripts" / "standard_features_scripts" / "train_svm_model_net10.py"
+    if not train_svm_path.exists():
+        return (
+            list(config["CLASSES"]),
+            int(config["N_TRAIN_PER_CLASS"]),
+            int(config["N_TEST_PER_CLASS"]),
+        )
+
     tree = ast.parse(train_svm_path.read_text(encoding="utf-8"))
     for node in tree.body:
         if not isinstance(node, ast.Assign):

@@ -5,11 +5,10 @@ Train/test an SVM using GNP first and second fundamental form coefficients.
 
 For each point cloud, GNP estimates:
     metric = [[E, F], [F, G]]
-    shape  = [[e, f1], [f2, g]]
+    shape  = [[L, M], [M, N]]
 
-The seven coefficient signals E, F, G, e, f1, f2, g can be used either as raw
-shape-level averages or converted to fixed-length shape descriptors using the
-existing indicator, voxel, and Fourier feature projections.
+The script trains on 21 shape-level features: distribution statistics of
+the invariant curvature signals K, H, k1, k2, plus total Gaussian curvature.
 """
 
 from __future__ import annotations
@@ -43,13 +42,16 @@ sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(ROOTS["FEATURE_SCRIPTS_ROOT"]))
 
-from features import extract_fundamental_form_features, raw_fundamental_form_feature_vector
+from features import fundamental_form_feature_vector
 from gnp.estimator import GeometryEstimator
 
-
-INDICATOR_BINS = 4
-VOXEL_BINS = 3
-N_FOURIER = 64
+CURVATURE_SIGNALS = ["K", "H", "k1", "k2"]
+CURVATURE_STATS = ["mean", "std", "skewness", "kurtosis", "iqr"]
+FEATURE_SIGNALS = [
+    f"{signal}_{stat}"
+    for signal in CURVATURE_SIGNALS
+    for stat in CURVATURE_STATS
+] + ["total_gaussian_curvature"]
 
 
 def load_points(csv_path: Path, max_points: int | None) -> np.ndarray:
@@ -78,20 +80,9 @@ def estimate_metric_and_shape(points: np.ndarray, device: torch.device) -> tuple
     return xyz_t, output["metric"], output["shape"]
 
 
-def process_points(points: np.ndarray, device: torch.device, feature_mode: str) -> np.ndarray:
+def process_points(points: np.ndarray, device: torch.device) -> np.ndarray:
     xyz_t, metric, shape = estimate_metric_and_shape(points, device)
-    if feature_mode == "raw":
-        return raw_fundamental_form_feature_vector(metric, shape).detach().cpu().numpy().astype(np.float32)
-
-    features = extract_fundamental_form_features(
-        xyz=xyz_t,
-        metric=metric,
-        shape=shape,
-        indicator_bins=INDICATOR_BINS,
-        voxel_bins=VOXEL_BINS,
-        n_fourier=N_FOURIER,
-    )
-    return features["combined"].detach().cpu().numpy().astype(np.float32)
+    return fundamental_form_feature_vector(metric, shape).detach().cpu().numpy().astype(np.float32)
 
 
 def read_rows(dataset_dir: Path) -> tuple[Path, list[dict[str, str]]]:
@@ -129,6 +120,14 @@ def resolve_csv_path(dataset_dir: Path, row: dict[str, str]) -> Path:
 def cache_is_fresh(cache_path: Path, manifest_path: Path, rows: list[dict[str, str]], dataset_dir: Path) -> bool:
     if not cache_path.exists():
         return False
+    try:
+        cached = np.load(cache_path, allow_pickle=True)
+        train_width = cached["X_train"].shape[1]
+        test_width = cached["X_test"].shape[1]
+        if train_width != test_width or train_width != len(FEATURE_SIGNALS):
+            return False
+    except Exception:
+        return False
     cache_mtime = cache_path.stat().st_mtime
     if manifest_path.stat().st_mtime > cache_mtime:
         return False
@@ -144,7 +143,6 @@ def build_features(
     classes: list[str],
     device: torch.device,
     max_points: int | None,
-    feature_mode: str,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     class_to_idx = {name: idx for idx, name in enumerate(classes)}
     X_train, y_train, X_test, y_test = [], [], [], []
@@ -157,7 +155,6 @@ def build_features(
         feature = process_points(
             load_points(csv_path, max_points=max_points),
             device,
-            feature_mode=feature_mode,
         )
         if split == "train":
             X_train.append(feature)
@@ -203,7 +200,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--max-points", type=int, default=None, help="Optional deterministic point subsample per shape.")
-    parser.add_argument("--feature-mode", choices=["projected", "raw"], default="projected")
     parser.add_argument("--recompute", action="store_true")
     return parser.parse_args()
 
@@ -213,12 +209,7 @@ def main() -> None:
     dataset_dir = args.dataset_dir.resolve()
     manifest_path, rows = read_rows(dataset_dir)
     classes = sorted({row["class_name"] for row in rows})
-    default_output_name = (
-        "svm_fundamental_form_outputs"
-        if args.feature_mode == "projected"
-        else "svm_fundamental_form_raw_outputs"
-    )
-    output_dir = args.output_dir or dataset_dir / default_output_name
+    output_dir = args.output_dir or dataset_dir / "svm_fundamental_form_outputs"
     output_dir.mkdir(parents=True, exist_ok=True)
     cache_path = output_dir / "features.npz"
     device = torch.device(args.device)
@@ -227,7 +218,7 @@ def main() -> None:
     print(f"Manifest: {manifest_path}")
     print(f"Device : {device}")
     print(f"Classes: {classes}")
-    print(f"Feature mode: {args.feature_mode}")
+    print("Features: " + ", ".join(FEATURE_SIGNALS))
 
     if not args.recompute and cache_is_fresh(cache_path, manifest_path, rows, dataset_dir):
         cached = np.load(cache_path, allow_pickle=True)
@@ -243,7 +234,6 @@ def main() -> None:
             classes=classes,
             device=device,
             max_points=args.max_points,
-            feature_mode=args.feature_mode,
         )
         np.savez(
             cache_path,
@@ -252,6 +242,7 @@ def main() -> None:
             X_test=X_test,
             y_test=y_test,
             classes=np.array(classes),
+            feature_signals=np.array(FEATURE_SIGNALS),
         )
         print(f"Saved features: {cache_path}")
 
@@ -268,10 +259,8 @@ def main() -> None:
         f"Classes: {classes}\n"
         f"Train shape: {X_train.shape}\n"
         f"Test shape: {X_test.shape}\n"
-        f"Feature signals: E, F, G, e, f1, f2, g\n"
-        f"Feature mode: {args.feature_mode}\n"
-        f"Per-signal projections: "
-        f"{'none; raw global averages only' if args.feature_mode == 'raw' else f'{3 * INDICATOR_BINS} halfspace + {VOXEL_BINS ** 3} voxel + {N_FOURIER} Fourier'}\n"
+        f"Feature signals: {', '.join(FEATURE_SIGNALS)}\n"
+        f"Feature aggregation: mean/std/skewness/kurtosis/IQR of K, H, k1, k2, plus total Gaussian curvature\n"
         f"Best params: {best_params}\n"
         f"Best CV acc: {best_cv:.3f}\n"
         f"Test acc: {test_acc:.3f}\n\n"
@@ -291,8 +280,7 @@ def main() -> None:
                 "best_params": best_params,
                 "best_cv_accuracy": best_cv,
                 "test_accuracy": test_acc,
-                "feature_signals": ["E", "F", "G", "e", "f1", "f2", "g"],
-                "feature_mode": args.feature_mode,
+                "feature_signals": FEATURE_SIGNALS,
             },
             handle,
         )

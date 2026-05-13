@@ -40,6 +40,7 @@ TEST_ROOT = ROOTS["TEST_ROOT"]
 WORKSPACE_ROOT = ROOTS["WORKSPACE_ROOT"]
 MODELNET_ROOT = ROOTS["MODELNET_ROOT"]
 DATA_ROOT = ROOTS["DATA_ROOT"]
+MODELNET_COPY_ROOT = DATA_ROOT / "ModelNet10 copy"
 DEFAULT_OUTPUT_ROOT = ROOTS["OUTPUT_ROOT"] / "gaussian" / "datasets"
 
 sys.path.insert(0, str(SCRIPT_DIR))
@@ -56,6 +57,8 @@ class SourceMesh:
     source_id: str
     mesh_path: Path
     variants: int
+    distort: bool = True
+    distortion_strength: float = 0.18
 
 
 def save_point_cloud_csv(points: np.ndarray, out_path: Path) -> None:
@@ -131,12 +134,12 @@ def random_fourier_vector_field(
     return field
 
 
-def make_variant(points: np.ndarray, seed: int) -> np.ndarray:
+def make_variant(points: np.ndarray, seed: int, distortion_strength: float) -> np.ndarray:
     rng = np.random.default_rng(seed)
     normed, centroid, scale = normalize_points(points)
     deformed = apply_axis_aligned_transform(normed, rng)
     for _ in range(6):
-        deformed = deformed + 0.18 * random_fourier_vector_field(deformed, rng)
+        deformed = deformed + distortion_strength * random_fourier_vector_field(deformed, rng)
     deformed = apply_axis_aligned_transform(deformed, rng)
     return deformed * scale + centroid
 
@@ -145,33 +148,30 @@ def select_modelnet_meshes(
     class_name: str,
     split: str,
     count: int,
-    stride: int,
+    root: Path,
 ) -> list[Path]:
-    files = sorted((MODELNET_ROOT / class_name / split).glob("*.off"))
+    files = sorted((root / class_name / split).glob("*.off"))
     if len(files) < count:
-        raise ValueError(f"Not enough {split} meshes for {class_name}: {len(files)} < {count}")
-    step = max(1, len(files) // max(stride, count))
-    selected = files[::step][:count]
-    if len(selected) < count:
-        selected = files[:count]
-    return selected
+        raise ValueError(f"Not enough {split} meshes for {class_name} in {root}: {len(files)} < {count}")
+    return files[:count]
 
 
 def build_modelnet_sources(
     train_meshes_per_class: int,
     test_meshes_per_class: int,
     variants_per_mesh: int,
+    split_filter: str,
 ) -> list[SourceMesh]:
-    mesh_overrides = {
-        ("desk", "train", "desk_0057"): MODELNET_ROOT / "desk" / "train" / "desk_0026.off",
-        ("desk", "test", "desk_0201"): MODELNET_ROOT / "desk" / "test" / "desk_0220.off",
-        ("sofa", "train", "sofa_0001"): MODELNET_ROOT / "sofa" / "train" / "sofa_0049.off",
-    }
+    modelnet_root = MODELNET_COPY_ROOT if MODELNET_COPY_ROOT.exists() else MODELNET_ROOT
     sources: list[SourceMesh] = []
     for class_name in ["bathtub", "desk", "sofa", "toilet"]:
-        for split, count in [("train", train_meshes_per_class), ("test", test_meshes_per_class)]:
-            for mesh_path in select_modelnet_meshes(class_name, split, count, stride=7):
-                mesh_path = mesh_overrides.get((class_name, split, mesh_path.stem), mesh_path)
+        for split, count, variants, distort in [
+            ("train", train_meshes_per_class, variants_per_mesh, True),
+            ("test", test_meshes_per_class, 1, False),
+        ]:
+            if split_filter != "all" and split != split_filter:
+                continue
+            for mesh_path in select_modelnet_meshes(class_name, split, count, root=modelnet_root):
                 sources.append(
                     SourceMesh(
                         dataset="modelnet10_smooth_shapes",
@@ -179,13 +179,18 @@ def build_modelnet_sources(
                         class_name=class_name,
                         source_id=mesh_path.stem,
                         mesh_path=mesh_path,
-                        variants=variants_per_mesh,
+                        variants=variants,
+                        distort=distort,
                     )
                 )
     return sources
 
 
-def build_smooth_mesh_sources(variants_per_shape: int, train_variants_per_shape: int) -> list[SourceMesh]:
+def build_smooth_mesh_sources(
+    variants_per_shape: int,
+    train_variants_per_shape: int,
+    distortion_strength: float,
+) -> list[SourceMesh]:
     meshes = [
         ("bob", DATA_ROOT / "bob_tri.obj"),
         ("blub", DATA_ROOT / "blub_triangulated.obj"),
@@ -201,12 +206,13 @@ def build_smooth_mesh_sources(variants_per_shape: int, train_variants_per_shape:
         ]:
             sources.append(
                 SourceMesh(
-                    dataset="smooth_mesh_distortions",
+                    dataset="only_smoothmeshes_gaussian_dataset",
                     split=split,
                     class_name=class_name,
                     source_id=mesh_path.stem,
                     mesh_path=mesh_path,
                     variants=variants,
+                    distortion_strength=distortion_strength,
                 )
             )
     return sources
@@ -220,6 +226,7 @@ def process_sources(
     gaussian_iterations: int,
     gaussian_sigma_factor: float,
     point_size: float,
+    preserve_manifest_splits: set[str] | None = None,
 ) -> None:
     manifest_rows: dict[str, list[dict[str, str | int]]] = {}
 
@@ -243,7 +250,11 @@ def process_sources(
 
         for local_variant_idx in range(1, source.variants + 1):
             global_seed = 100_000 * (source_idx + 1) + local_variant_idx
-            variant = make_variant(smoothed, seed=global_seed)
+            variant = make_variant(
+                smoothed,
+                seed=global_seed,
+                distortion_strength=source.distortion_strength,
+            ) if source.distort else smoothed
             item_id = f"{source.class_name}_{source.split}_{source.source_id}_variant{local_variant_idx:02d}"
             csv_path = csv_dir / f"{item_id}.csv"
             png_path = png_dir / f"{item_id}.png"
@@ -260,12 +271,20 @@ def process_sources(
                     "csv_path": str(csv_path),
                     "png_path": str(png_path),
                     "n_points": n_points,
+                    "distorted": int(source.distort),
+                    "distortion_strength": source.distortion_strength if source.distort else 0.0,
                 }
             )
 
     for dataset, rows in manifest_rows.items():
         manifest_path = output_root / dataset / "manifest.csv"
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        if preserve_manifest_splits and manifest_path.exists():
+            with manifest_path.open(newline="", encoding="utf-8") as handle:
+                preserved_rows = [
+                    row for row in csv.DictReader(handle) if row.get("split") in preserve_manifest_splits
+                ]
+            rows = preserved_rows + rows
         with manifest_path.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
             writer.writeheader()
@@ -282,10 +301,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gaussian-sigma-factor", type=float, default=4.0)
     parser.add_argument("--point-size", type=float, default=0.25)
     parser.add_argument("--modelnet-train-meshes-per-class", type=int, default=3)
-    parser.add_argument("--modelnet-test-meshes-per-class", type=int, default=1)
+    parser.add_argument("--modelnet-test-meshes-per-class", type=int, default=3)
     parser.add_argument("--modelnet-variants-per-mesh", type=int, default=3)
+    parser.add_argument(
+        "--modelnet-split",
+        choices=["all", "train", "test"],
+        default="all",
+        help="Limit ModelNet10 generation to one split. Existing rows from the other split are preserved.",
+    )
     parser.add_argument("--smooth-variants-per-shape", type=int, default=10)
     parser.add_argument("--smooth-train-variants-per-shape", type=int, default=8)
+    parser.add_argument("--smooth-distortion-strength", type=float, default=0.45)
+    parser.add_argument(
+        "--dataset",
+        choices=["all", "modelnet10_smooth_shapes", "smooth_mesh_distortions", "only_smoothmeshes_gaussian_dataset"],
+        default="all",
+    )
     return parser.parse_args()
 
 
@@ -293,19 +324,23 @@ def main() -> None:
     args = parse_args()
     args.output_root.mkdir(parents=True, exist_ok=True)
     sources = []
-    sources.extend(
-        build_modelnet_sources(
-            train_meshes_per_class=args.modelnet_train_meshes_per_class,
-            test_meshes_per_class=args.modelnet_test_meshes_per_class,
-            variants_per_mesh=args.modelnet_variants_per_mesh,
+    if args.dataset in {"all", "modelnet10_smooth_shapes"}:
+        sources.extend(
+            build_modelnet_sources(
+                train_meshes_per_class=args.modelnet_train_meshes_per_class,
+                test_meshes_per_class=args.modelnet_test_meshes_per_class,
+                variants_per_mesh=args.modelnet_variants_per_mesh,
+                split_filter=args.modelnet_split,
+            )
         )
-    )
-    sources.extend(
-        build_smooth_mesh_sources(
-            variants_per_shape=args.smooth_variants_per_shape,
-            train_variants_per_shape=args.smooth_train_variants_per_shape,
+    if args.dataset in {"all", "smooth_mesh_distortions", "only_smoothmeshes_gaussian_dataset"}:
+        sources.extend(
+            build_smooth_mesh_sources(
+                variants_per_shape=args.smooth_variants_per_shape,
+                train_variants_per_shape=args.smooth_train_variants_per_shape,
+                distortion_strength=args.smooth_distortion_strength,
+            )
         )
-    )
     process_sources(
         sources=sources,
         output_root=args.output_root,
@@ -314,6 +349,7 @@ def main() -> None:
         gaussian_iterations=args.gaussian_iterations,
         gaussian_sigma_factor=args.gaussian_sigma_factor,
         point_size=args.point_size,
+        preserve_manifest_splits=({"test"} if args.dataset == "modelnet10_smooth_shapes" and args.modelnet_split == "train" else None),
     )
 
 
