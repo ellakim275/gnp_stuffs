@@ -26,7 +26,7 @@ def estimate_curvatures(points, device):
     xyz_t = torch.tensor(xyz, dtype=torch.float32, device=device)
     n_t   = torch.tensor(normals, dtype=torch.float32, device=device)
     estimator = GeometryEstimator(xyz_t, orientation=n_t, model='clean_30k', device=device)
-    output = estimator.estimate_quantities(['mean_curvature', 'gaussian_curvature'])
+    output = estimator.estimate_quantities(['mean_curvature', 'gaussian_curvature', 'normals'])
     return xyz_t, output
 
 

@@ -60,14 +60,14 @@ def estimate_point_area_weights(
     return (np.pi * kth_distances.square() / n_neighbors).to(xyz.device)
 
 
-def total_gaussian_curvature(
+def gaussian_curvature_integral(
     gaussian_curvature,
     area_weights=None,
     xyz: torch.Tensor | None = None,
     area_k: int = 16,
 ) -> torch.Tensor:
     """
-    Approximate the total Gaussian curvature integral, int_M K dA.
+    Approximate the Gaussian curvature integral, int_M K dA.
 
     If explicit per-point area weights are unavailable, pass ``xyz`` and this
     function will estimate weights from local point spacing.
@@ -77,7 +77,7 @@ def total_gaussian_curvature(
 
     if area_weights is None:
         if xyz is None:
-            area_weights = torch.ones_like(gaussian_curvature)
+            raise ValueError("Pass either area_weights or xyz to compute the curvature integral.")
         else:
             area_weights = estimate_point_area_weights(xyz, k=area_k)
     else:
@@ -103,13 +103,13 @@ def euler_characteristic_from_gauss_bonnet(
     This assumes the sampled surface is closed and orientable. For open surfaces,
     Gauss-Bonnet also has boundary terms, which are not estimated here.
     """
-    total_curvature = total_gaussian_curvature(
+    curvature_integral = gaussian_curvature_integral(
         gaussian_curvature=gaussian_curvature,
         area_weights=area_weights,
         xyz=xyz,
         area_k=area_k,
     )
-    return total_curvature / (2.0 * np.pi)
+    return curvature_integral / (2.0 * np.pi)
 
 
 def compute_gauss_bonnet_features(
@@ -117,7 +117,7 @@ def compute_gauss_bonnet_features(
     curvatures: dict | torch.Tensor,
     area_weights=None,
     area_k: int = 16,
-    return_total_curvature: bool = False,
+    return_integral: bool = False,
 ) -> torch.Tensor:
     """
     Compute the single Gauss-Bonnet feature for one input point cloud.
@@ -135,9 +135,9 @@ def compute_gauss_bonnet_features(
         available; otherwise they are estimated from the point cloud.
     area_k : int
         Neighbor count for point-cloud area estimation.
-    return_total_curvature : bool
+    return_integral : bool
         If False, return Euler characteristic estimate chi. If True, return
-        total Gaussian curvature int_M K dA.
+        Gaussian curvature integral int_M K dA.
 
     Returns
     -------
@@ -151,8 +151,8 @@ def compute_gauss_bonnet_features(
     else:
         gaussian_curvature = curvatures
 
-    if return_total_curvature:
-        feature = total_gaussian_curvature(
+    if return_integral:
+        feature = gaussian_curvature_integral(
             gaussian_curvature=gaussian_curvature,
             area_weights=area_weights,
             xyz=xyz,

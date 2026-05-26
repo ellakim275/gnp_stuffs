@@ -7,8 +7,9 @@ For each point cloud, GNP estimates:
     metric = [[E, F], [F, G]]
     shape  = [[L, M], [M, N]]
 
-The script trains on 21 shape-level features: distribution statistics of
-the invariant curvature signals K, H, k1, k2, plus total Gaussian curvature.
+The script trains on 21 shape-level features by default: distribution
+statistics of the invariant curvature signals K, H, k1, k2, plus the
+Gaussian curvature integral. It can also train on only that integral.
 """
 
 from __future__ import annotations
@@ -51,7 +52,7 @@ FEATURE_SIGNALS = [
     f"{signal}_{stat}"
     for signal in CURVATURE_SIGNALS
     for stat in CURVATURE_STATS
-] + ["total_gaussian_curvature"]
+] + ["gaussian_curvature_integral"]
 
 
 def load_points(csv_path: Path, max_points: int | None) -> np.ndarray:
@@ -80,9 +81,26 @@ def estimate_metric_and_shape(points: np.ndarray, device: torch.device) -> tuple
     return xyz_t, output["metric"], output["shape"]
 
 
-def process_points(points: np.ndarray, device: torch.device) -> np.ndarray:
+def select_feature_mode(feature: np.ndarray, feature_mode: str) -> np.ndarray:
+    if feature_mode == "all":
+        return feature
+    if feature_mode == "gaussian_curvature_integral":
+        return feature[-1:].copy()
+    raise ValueError(f"Unknown feature mode: {feature_mode}")
+
+
+def feature_signals_for_mode(feature_mode: str) -> list[str]:
+    if feature_mode == "all":
+        return FEATURE_SIGNALS
+    if feature_mode == "gaussian_curvature_integral":
+        return ["gaussian_curvature_integral"]
+    raise ValueError(f"Unknown feature mode: {feature_mode}")
+
+
+def process_points(points: np.ndarray, device: torch.device, feature_mode: str, area_k: int) -> np.ndarray:
     xyz_t, metric, shape = estimate_metric_and_shape(points, device)
-    return fundamental_form_feature_vector(metric, shape).detach().cpu().numpy().astype(np.float32)
+    feature = fundamental_form_feature_vector(metric, shape, xyz_t, area_k=area_k).detach().cpu().numpy().astype(np.float32)
+    return select_feature_mode(feature, feature_mode)
 
 
 def read_rows(dataset_dir: Path) -> tuple[Path, list[dict[str, str]]]:
@@ -117,14 +135,30 @@ def resolve_csv_path(dataset_dir: Path, row: dict[str, str]) -> Path:
     raise FileNotFoundError(f"Could not resolve CSV path {raw!r} relative to {dataset_dir}")
 
 
-def cache_is_fresh(cache_path: Path, manifest_path: Path, rows: list[dict[str, str]], dataset_dir: Path) -> bool:
+def cache_is_fresh(
+    cache_path: Path,
+    manifest_path: Path,
+    rows: list[dict[str, str]],
+    dataset_dir: Path,
+    feature_signals: list[str],
+    area_k: int,
+) -> bool:
     if not cache_path.exists():
         return False
     try:
         cached = np.load(cache_path, allow_pickle=True)
         train_width = cached["X_train"].shape[1]
         test_width = cached["X_test"].shape[1]
-        if train_width != test_width or train_width != len(FEATURE_SIGNALS):
+        if train_width != test_width or train_width != len(feature_signals):
+            return False
+        if "feature_version" not in cached.files or str(cached["feature_version"]) != "gaussian_curvature_integral_v1":
+            return False
+        if "area_k" not in cached.files or int(cached["area_k"]) != int(area_k):
+            return False
+        if "feature_signals" not in cached.files:
+            return False
+        cached_signals = [str(value) for value in cached["feature_signals"]]
+        if cached_signals != feature_signals:
             return False
     except Exception:
         return False
@@ -143,6 +177,8 @@ def build_features(
     classes: list[str],
     device: torch.device,
     max_points: int | None,
+    feature_mode: str,
+    area_k: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     class_to_idx = {name: idx for idx, name in enumerate(classes)}
     X_train, y_train, X_test, y_test = [], [], [], []
@@ -155,6 +191,8 @@ def build_features(
         feature = process_points(
             load_points(csv_path, max_points=max_points),
             device,
+            feature_mode=feature_mode,
+            area_k=area_k,
         )
         if split == "train":
             X_train.append(feature)
@@ -200,6 +238,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--max-points", type=int, default=None, help="Optional deterministic point subsample per shape.")
+    parser.add_argument(
+        "--feature-mode",
+        choices=["all", "gaussian_curvature_integral"],
+        default="all",
+        help="Use all fundamental-form summary features or only the Gaussian curvature integral.",
+    )
+    parser.add_argument("--area-k", type=int, default=16, help="Neighbor count for local point-area weights.")
     parser.add_argument("--recompute", action="store_true")
     return parser.parse_args()
 
@@ -211,16 +256,20 @@ def main() -> None:
     classes = sorted({row["class_name"] for row in rows})
     output_dir = args.output_dir or dataset_dir / "svm_fundamental_form_outputs"
     output_dir.mkdir(parents=True, exist_ok=True)
-    cache_path = output_dir / "features.npz"
+    feature_signals = feature_signals_for_mode(args.feature_mode)
+    cache_name = "features.npz" if args.feature_mode == "all" else f"features_{args.feature_mode}.npz"
+    cache_path = output_dir / cache_name
     device = torch.device(args.device)
 
     print(f"Dataset: {dataset_dir}")
     print(f"Manifest: {manifest_path}")
     print(f"Device : {device}")
     print(f"Classes: {classes}")
-    print("Features: " + ", ".join(FEATURE_SIGNALS))
+    print(f"Feature mode: {args.feature_mode}")
+    print(f"Area k: {args.area_k}")
+    print("Features: " + ", ".join(feature_signals))
 
-    if not args.recompute and cache_is_fresh(cache_path, manifest_path, rows, dataset_dir):
+    if not args.recompute and cache_is_fresh(cache_path, manifest_path, rows, dataset_dir, feature_signals, args.area_k):
         cached = np.load(cache_path, allow_pickle=True)
         X_train = cached["X_train"]
         y_train = cached["y_train"]
@@ -234,6 +283,8 @@ def main() -> None:
             classes=classes,
             device=device,
             max_points=args.max_points,
+            feature_mode=args.feature_mode,
+            area_k=args.area_k,
         )
         np.savez(
             cache_path,
@@ -242,7 +293,10 @@ def main() -> None:
             X_test=X_test,
             y_test=y_test,
             classes=np.array(classes),
-            feature_signals=np.array(FEATURE_SIGNALS),
+            feature_signals=np.array(feature_signals),
+            feature_mode=args.feature_mode,
+            feature_version="gaussian_curvature_integral_v1",
+            area_k=args.area_k,
         )
         print(f"Saved features: {cache_path}")
 
@@ -259,8 +313,10 @@ def main() -> None:
         f"Classes: {classes}\n"
         f"Train shape: {X_train.shape}\n"
         f"Test shape: {X_test.shape}\n"
-        f"Feature signals: {', '.join(FEATURE_SIGNALS)}\n"
-        f"Feature aggregation: mean/std/skewness/kurtosis/IQR of K, H, k1, k2, plus total Gaussian curvature\n"
+        f"Feature mode: {args.feature_mode}\n"
+        f"Feature signals: {', '.join(feature_signals)}\n"
+        f"Feature aggregation: {'Gaussian curvature integral only' if args.feature_mode == 'gaussian_curvature_integral' else 'mean/std/skewness/kurtosis/IQR of K, H, k1, k2, plus Gaussian curvature integral'}\n"
+        f"Area weighting: local tangent-disk estimate with area_k={args.area_k}\n"
         f"Best params: {best_params}\n"
         f"Best CV acc: {best_cv:.3f}\n"
         f"Test acc: {test_acc:.3f}\n\n"
@@ -280,7 +336,10 @@ def main() -> None:
                 "best_params": best_params,
                 "best_cv_accuracy": best_cv,
                 "test_accuracy": test_acc,
-                "feature_signals": FEATURE_SIGNALS,
+                "feature_mode": args.feature_mode,
+                "feature_signals": feature_signals,
+                "feature_version": "gaussian_curvature_integral_v1",
+                "area_k": args.area_k,
             },
             handle,
         )

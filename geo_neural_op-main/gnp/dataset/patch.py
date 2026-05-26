@@ -123,6 +123,7 @@ class PatchGenerator:
                  graph_radius: float,
                  batch_size: int=1,
                  center: str='tree',
+                 center_indices: Optional[torch.LongTensor]=None,
                  shuffle_patches: bool=True,
                  knn: int=50,
                  min_radius: float=0.01,
@@ -146,6 +147,7 @@ class PatchGenerator:
         self.device = device
         self.tree = KDTree(self.x.cpu().numpy())
         self.center = center
+        self.center_indices = center_indices
         self.knn = knn
         self.min_radius = torch.tensor(min_radius)
         self.centers = self.get_centers()
@@ -165,7 +167,8 @@ class PatchGenerator:
         knn_dist, self.knn_ind = self.tree.query(
             self.center_data.cpu().numpy(), k=self.knn, eps=0.05
             )
-        self.knn_dist = torch.from_numpy(knn_dist[:, -1])
+        knn_dist = np.asarray(knn_dist)
+        self.knn_dist = torch.from_numpy(knn_dist if knn_dist.ndim == 1 else knn_dist[:, -1])
 
         if not hasattr(self, 'clusters'):
             self.clusters = tg.nn.knn(self.center_data, self.x, k=1)[1].squeeze()
@@ -200,7 +203,8 @@ class PatchGenerator:
             
             knn_dist, self.knn_ind = self.tree.query(self.x.cpu()[centers].numpy(), 
                                                           k=self.knn)
-            self.knn_dist = torch.from_numpy(knn_dist[:, -1])
+            knn_dist = np.asarray(knn_dist)
+            self.knn_dist = torch.from_numpy(knn_dist if knn_dist.ndim == 1 else knn_dist[:, -1])
             
             clusters = torch.zeros(self.x.shape[0], dtype=torch.long)
             arange = torch.arange(self.knn_ind.shape[0])
@@ -212,8 +216,26 @@ class PatchGenerator:
             centers = torch.arange(self.x.shape[0])
             knn_dist, self.knn_ind = self.tree.query(self.x.cpu().numpy(), 
                                                           k=self.knn)
-            self.knn_dist = torch.from_numpy(knn_dist[:, -1])
+            knn_dist = np.asarray(knn_dist)
+            self.knn_dist = torch.from_numpy(knn_dist if knn_dist.ndim == 1 else knn_dist[:, -1])
             self.clusters = centers.clone()
+
+        elif self.center == 'indices':
+            if self.center_indices is None:
+                raise ValueError("center_indices must be provided when center='indices'")
+            centers = torch.as_tensor(self.center_indices, dtype=torch.long).flatten().cpu()
+            if centers.numel() == 0:
+                raise ValueError("center_indices must contain at least one point index")
+            if centers.min() < 0 or centers.max() >= self.x.shape[0]:
+                raise ValueError("center_indices contains an out-of-range point index")
+            centers = torch.unique(centers, sorted=False)
+            knn_dist, self.knn_ind = self.tree.query(self.x.cpu()[centers].numpy(),
+                                                     k=self.knn)
+            knn_dist = np.asarray(knn_dist)
+            self.knn_dist = torch.from_numpy(knn_dist if knn_dist.ndim == 1 else knn_dist[:, -1])
+            center_tree = KDTree(self.x.cpu()[centers].numpy())
+            _, clusters = center_tree.query(self.x.cpu().numpy(), k=1)
+            self.clusters = torch.from_numpy(np.asarray(clusters)).long()
             
         return centers
     
@@ -339,6 +361,7 @@ class PatchLoader:
                  graph_radius: float,
                  batch_size: int=1,
                  center: str='tree',
+                 center_indices: Optional[torch.LongTensor]=None,
                  shuffle_patches: bool=True,
                  knn: int=50,
                  min_radius: float=0.01,
@@ -353,6 +376,7 @@ class PatchLoader:
         self.shuffle = shuffle_patches
         self.device = device
         self.center = center
+        self.center_indices = center_indices
         self.knn = knn
         self.min_radius = min_radius
         self.pca = pca
@@ -382,6 +406,7 @@ class PatchLoader:
                               batch_size=self.batch_size,
                               shuffle_patches=self.shuffle,
                               center=self.center,
+                              center_indices=self.center_indices,
                               knn=self.knn,
                               min_radius=self.min_radius,
                               pca=self.pca,
@@ -389,4 +414,3 @@ class PatchLoader:
                               min_z_scale=self.min_z_scale,
                               max_num_neighbors=self.max_num_neighbors,
                               device=self.device)
-

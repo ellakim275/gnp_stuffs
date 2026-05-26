@@ -275,8 +275,25 @@ def fundamental_form_coefficients(metric: torch.Tensor,
     }
 
 
+def fundamental_form_coefficient_vector(metric: torch.Tensor,
+                                        shape: torch.Tensor) -> torch.Tensor:
+    """
+    Return raw first/second fundamental form coefficients in fixed order.
+
+    The output has shape (N, 6), with columns:
+        E, F, G, L, M, N
+    """
+    signals = fundamental_form_coefficients(metric, shape)
+    return torch.stack(
+        [signals[name] for name in ["E", "F", "G", "L", "M", "N"]],
+        dim=-1,
+    )
+
+
 def fundamental_form_feature_vector(metric: torch.Tensor,
-                                    shape: torch.Tensor) -> torch.Tensor:
+                                    shape: torch.Tensor,
+                                    xyz: torch.Tensor,
+                                    area_k: int = 16) -> torch.Tensor:
     """
     Return invariant curvature distribution features for a whole shape.
 
@@ -290,14 +307,16 @@ def fundamental_form_feature_vector(metric: torch.Tensor,
     Each signal is summarized by five distribution statistics:
         mean, std, skewness, excess kurtosis, IQR.
 
-    The final feature is the discrete total Gaussian curvature, sum(K).
+    The final feature is the Gaussian curvature integral, sum(K_i dA_i).
+    Since the inputs are point clouds, dA_i is estimated from local point
+    spacing around each sample.
 
     The output order is:
         K_mean, K_std, K_skewness, K_kurtosis, K_iqr,
         H_mean, H_std, H_skewness, H_kurtosis, H_iqr,
         k1_mean, k1_std, k1_skewness, k1_kurtosis, k1_iqr,
         k2_mean, k2_std, k2_skewness, k2_kurtosis, k2_iqr,
-        total_gaussian_curvature
+        gaussian_curvature_integral
     """
     signals = fundamental_form_coefficients(metric, shape)
     first_form_det = signals["E"] * signals["G"] - signals["F"] * signals["F"]
@@ -318,8 +337,51 @@ def fundamental_form_feature_vector(metric: torch.Tensor,
 
     curvature_signals = [gaussian_curvature, mean_curvature, principal_1, principal_2]
     feature_parts = [_distribution_stats(signal.float()) for signal in curvature_signals]
-    total_gaussian_curvature = _winsorized_values(gaussian_curvature.float()).sum().view(1)
-    return torch.cat(feature_parts + [total_gaussian_curvature])
+    gaussian_curvature_integral = _curvature_integral(
+        gaussian_curvature.float(),
+        xyz=xyz,
+        area_k=area_k,
+    ).view(1)
+    return torch.cat(feature_parts + [gaussian_curvature_integral])
+
+
+def estimate_point_area_weights(xyz: torch.Tensor, k: int = 16) -> torch.Tensor:
+    """
+    Estimate one local surface-area weight per point from k-nearest neighbors.
+    """
+    if xyz.ndim != 2 or xyz.shape[-1] != 3:
+        raise ValueError("xyz must have shape (N, 3).")
+
+    n_points = xyz.shape[0]
+    if n_points == 0:
+        raise ValueError("xyz must contain at least one point.")
+    if n_points == 1:
+        return torch.ones(1, dtype=xyz.dtype, device=xyz.device)
+
+    n_neighbors = min(max(int(k), 1), n_points - 1)
+    distances = torch.cdist(xyz.float(), xyz.float())
+    kth_distances = torch.topk(
+        distances,
+        k=n_neighbors + 1,
+        largest=False,
+        dim=1,
+    ).values[:, -1]
+    return np.pi * kth_distances.square() / n_neighbors
+
+
+def _curvature_integral(signal: torch.Tensor,
+                        xyz: torch.Tensor,
+                        area_k: int = 16) -> torch.Tensor:
+    """
+    Approximate int K dA with the same winsorization used for scalar summaries.
+    """
+    finite_mask = torch.isfinite(signal)
+    if not finite_mask.any():
+        return signal.new_tensor(0.0)
+
+    values = _winsorized_values(signal[finite_mask])
+    weights = estimate_point_area_weights(xyz.to(signal.device), k=area_k)[finite_mask]
+    return torch.sum(values * weights)
 
 
 def _distribution_stats(signal: torch.Tensor) -> torch.Tensor:
