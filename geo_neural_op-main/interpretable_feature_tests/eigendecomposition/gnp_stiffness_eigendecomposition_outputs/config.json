@@ -1,0 +1,23 @@
+{
+  "feature_version": "gnp_gmls_stiffness_eigenvectors_v1",
+  "dataset_dir": "/Users/ellakim/collaboration_Ella_Kim/gnp_collab/geo_neural_op-main/interpretable_feature_tests/output/gaussian/datasets/only_smoothmeshes_gaussian_dataset",
+  "manifest": "/Users/ellakim/collaboration_Ella_Kim/gnp_collab/geo_neural_op-main/interpretable_feature_tests/output/gaussian/datasets/only_smoothmeshes_gaussian_dataset/manifest.csv",
+  "model": "clean_30k",
+  "device": "cpu",
+  "normalize": "unit_sphere",
+  "max_points": 1000,
+  "normal_knn": 30,
+  "orient_knn": 100,
+  "drop_ratio": 0.1,
+  "radius": 1.0,
+  "gmls_p": 4,
+  "remove_outliers": false,
+  "eigenvectors": 32,
+  "eigen_tol": 0.0001,
+  "eigen_maxiter": null,
+  "signature_eigenvector": 1,
+  "start_index": 10,
+  "end_index": 20,
+  "max_samples": null,
+  "random_state": 0
+}
